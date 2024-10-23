@@ -18,6 +18,7 @@ class Agent:
     TOTAL_NUM = np.sum(NUMS)
 
     INIT_ASSETS = [2_000_000.0, 10_000_000.0, 2_000_000.0, 2_000_000.0]
+    MAX_BUDGET = 1_000_000.0
 
     RISK_FREE_RATE = 0
 
