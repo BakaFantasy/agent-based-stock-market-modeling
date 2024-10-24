@@ -12,8 +12,9 @@ def main() -> None:
       model.simulate_one_round()
     model.save('model.npy')
   model.plot_index()
-  model.plot_stock(0)
-  model.plot_stock(200)
+  model.plot_agent(0)
+  model.plot_agent(2100)
+  model.plot_agent(2200)
 
 
 if __name__ == '__main__':

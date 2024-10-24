@@ -3,17 +3,23 @@ import numpy as np
 
 # hyperparameters
 LOAD_DATA = False
-ROUNDS = 10
+ROUNDS = 100
 SEED = 42
-
-# constants
-GENERATOR = np.random.Generator(np.random.PCG64(seed=SEED))
 
 
 class Agent:
-  # Sequence: random agents, expert agents, local imitative agents, market imitative agents
-  ID = {'RA': 0, 'EA': 1, 'LIA': 2, 'MIA': 3}
-  NUM_TYPE = len(ID)
+  # Sequence: random agents, expert agents, local imitative agents, market imitative agents, TWAP agents, VWAP agents
+  NAMES = [
+    'RA',
+    # 'EA',
+    # 'LIA',
+    # 'MIA',
+    # 'TWAP',
+    # 'VWAP',
+  ]
+  NUM_TYPE = len(NAMES)
+  ID = dict(zip(NAMES, range(NUM_TYPE)))
+
   NUMS = [2000, 100, 500, 500]
   __BEGIN_INDICES = [0] + list(np.cumsum(NUMS))
   SLICES = []
@@ -22,19 +28,28 @@ class Agent:
   TOTAL_NUM = np.sum(NUMS)
 
   INIT_ASSETS = [2_000_000.0, 10_000_000.0, 2_000_000.0, 2_000_000.0]
-  MAX_BUDGET = 1_000_000.0
+  MAX_BUDGET = 10_000.0
 
-  RISK_FREE_RATE = 0
+  RISK_FREE_INTEREST_RATE = 0
+  RISK_FREE_DAILY_RETURN_RATE = .0001
 
   ALTERNATIVE_NUM = 10
   MAX_PURCHASE_NUM = 5
   EXPECTED_PROFIT = 0
 
+  LOCAL_IMITATIVE_SIGHT = 10
+
 
 class Stock:
   # Sequence: small, medium, large
-  ID = {'S': 0, 'M': 1, 'L': 2}
-  NUM_TYPE = len(ID)
+  NAMES = [
+    'S',
+    'M',
+    'L',
+  ]
+  NUM_TYPE = len(NAMES)
+  ID = dict(zip(NAMES, range(NUM_TYPE)))
+
   NUMS = [100, 100, 100]
   __BEGIN_INDICES = [0] + list(np.cumsum(NUMS))
   SLICES = []
