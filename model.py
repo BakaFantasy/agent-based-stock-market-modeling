@@ -45,43 +45,62 @@ class Model:
                        update_local_imitative_agents, update_market_imitative_agents]
 
   def __update(self) -> None:
+    """
+    Update expected prices of all types of agents.
+    """
     for i in range(constants.Agent.NUM_TYPE):
       self.__updaters[i](self.__assets)
 
   def __order(self) -> (NDArray[np.float64], NDArray[np.float64]):
-    # argsort the difference between the expected price and the current price and get the first ALTERNATIVE_NUM stocks
+    """
+    Construct purchase orders and sell orders for each agent.
+
+    The process of constructing orders is divided into 9 steps:
+
+    1. generate alternatives for each agent, which are the stocks that have the highest expected profit.
+
+    2. determine the number of stocks that each agent wants to purchase.
+
+    3. pick the stocks that each agent wants to purchase from the alternatives.
+
+    4. filter out the stocks that each agent owns.
+
+    5. pick the stocks that each agent wants to sell from the intersection of the alternatives and the owned stocks.
+
+    6. determine quantities of each stock that each agent wants to purchase proportional to the expected profits.
+
+    7. construct purchase orders, which are the tuples of (agent_id, stock_id, quantity, purchase_price).
+
+    8. construct sell orders, which are the tuples of (agent_id, stock_id, quantity, sell_price).
+
+    9. append the market orders to sell orders, where the market sells all the stocks it owns with the current price.
+
+    :return: A tuple of purchase orders and sell orders.
+    """
     alternatives = np.argsort(self.__assets[-1, :-1, 1] - self.__assets[:-1, :-1, 1],
                               axis=1)[:, :constants.Agent.ALTERNATIVE_NUM]
-    # create purchase order for the stocks in [0, min(MAX_PURCHASE_ORDERS, POSITIVE_COUNT)) if the difference is positive; otherwise create sell order if the agent owns the stock
+
     purchase_nums = np.array([min(constants.Agent.MAX_PURCHASE_NUM,
                                   np.sum(self.__assets[i, alternatives[i], 1] - self.__assets[-1, alternatives[i], 1] >= constants.Agent.EXPECTED_PROFIT))
                               for i in range(constants.Agent.TOTAL_NUM)], dtype=np.int32)
+
     purchase_alternatives = np.array([alternatives[i, :purchase_nums[i]]
                                       for i in range(constants.Agent.TOTAL_NUM)], dtype=object)
-    # get the stock_ids that the agents owns, which is the stocks with assets[i, stock_id, 0] > 0
+
     owned_stocks = np.array([np.nonzero(self.__assets[i, :-1, 0] > 0)[0]
                              for i in range(constants.Agent.TOTAL_NUM + 1)], dtype=object)
-    # sell_alternatives is the intersection of [alternative[i, purchase_nums[i]:] and owned_stocks[i]
+
     sell_alternatives = np.array([np.intersect1d(alternatives[i, purchase_nums[i]:], owned_stocks[i])
                                   for i in range(constants.Agent.TOTAL_NUM)], dtype=object)
-    # columns of purchase_orders is (agent_id, stock_id, quantity, purchase_price), where
-    # quantity is budget / order_price where the budget is proportional to the profit of the stock, and
-    # order_price is current price plus a random number, making the order price in range [current price, current price + (expected price - expected price at purchase_num))
 
-    def get_quantities(assets: NDArray[np.float64]) -> NDArray[np.float64]:
-      budgets = np.array([min(assets[i, -1, 0], constants.Agent.MAX_BUDGET)
-                          for i in range(constants.Agent.TOTAL_NUM)], dtype=np.float64)
-      # profits is the difference between expected price and the current price of the stocks in purchase_alternatives
-      profits = np.array([assets[i, np.array(purchase_alternatives[i], dtype=np.int32), 1] - assets[-1, np.array(purchase_alternatives[i], dtype=np.int32), 1]
-                          for i in range(constants.Agent.TOTAL_NUM)], dtype=object)
-      # distribute the budget to the stocks in purchase_alternatives proportionally to their profits
-      # quantities contains the dictionary of the quantity of the stocks in purchase_alternatives
-      # TODO: eliminate division by zero
-      return np.array([dict(zip(stock_ids, budgets[i] / np.sum(profits[i]) * profits[i]))
-                            for i, stock_ids in enumerate(purchase_alternatives)], dtype=object)
+    budgets = np.array([min(self.__assets[i, -1, 0], constants.Agent.MAX_BUDGET)
+                        for i in range(constants.Agent.TOTAL_NUM)], dtype=np.float64)
+    profits = np.array([self.__assets[i, np.array(purchase_alternatives[i], dtype=np.int32), 1] - self.__assets[-1, np.array(purchase_alternatives[i], dtype=np.int32), 1]
+                        for i in range(constants.Agent.TOTAL_NUM)], dtype=object)
+    # TODO: eliminate division by zero
+    quantities = np.array([dict(zip(stock_ids, budgets[i] / np.sum(profits[i]) * profits[i]))
+                     for i, stock_ids in enumerate(purchase_alternatives)], dtype=object)
 
-    quantities = get_quantities(self.__assets)
-    # purchase_orders doesn't contain orders with quantity 0 or NaN
     purchase_orders = np.array([[i, stock_id, np.floor(quantities[i][stock_id]),
                                 self.__assets[-1, stock_id, 1] +
                                  ((self.__assets[i, stock_id, 1] - self.__assets[-1, stock_id, 1]) -
@@ -92,6 +111,7 @@ class Model:
                                 for stock_id in stock_ids
                                 if np.nonzero(quantities[i][stock_id]) and not np.isnan(quantities[i][stock_id])],
                                dtype=np.float64)
+
     sell_orders = np.array([[i, stock_id, self.__assets[i, stock_id, 0],
                              self.__assets[-1, stock_id, 1] +
                              ((self.__assets[i, stock_id, 1] - self.__assets[-1, stock_id, 1]) -
@@ -100,17 +120,60 @@ class Model:
                              constants.GENERATOR.random()]
                             for i, stock_ids in enumerate(sell_alternatives)
                             for stock_id in stock_ids], dtype=np.float64)
+
     if sell_orders.size == 0:
       sell_orders = np.empty((0, 4), dtype=np.float64)
-    # market, i.e. the last agent, sells all the stocks it owns with the current price
     market_orders = np.array([[constants.Agent.TOTAL_NUM, stock_id, self.__assets[-1, stock_id, 0],
                                self.__assets[-1, stock_id, 1]]
                               for stock_id in owned_stocks[-1]])
     sell_orders = np.append(sell_orders, market_orders, axis=0)
+
     return purchase_orders, sell_orders
 
   def __negotiate(self, purchase_orders: NDArray[np.float64], sell_orders: NDArray[np.float64]) -> NDArray[np.int32]:
-    pass
+    """
+    Match purchase orders and sell orders to construct transactions.
+
+    The process of constructing transactions is divided into 3 steps:
+
+    1. sort the purchase_orders and sell_orders by the order price in descending order.
+
+    2. group the two arrays of orders by stock numbers.
+
+    3. match the purchase_orders and sell_orders in loop with dual pointers, constructing transactions
+      which are tuples of (purchaser_id, seller_id, stock_id, quantity, price).
+
+    :param purchase_orders: Tuples of (agent_id, stock_id, quantity, purchase_price).
+    :param sell_orders: Tuple of (agent_id, stock_id, quantity, sell_price).
+    :return: Tuples of (purchaser_id, seller_id, stock_id, quantity, price).
+    """
+    purchase_orders = purchase_orders[np.argsort(purchase_orders[:, 3])[::-1]]
+    sell_orders = sell_orders[np.argsort(sell_orders[:, 3])[::-1]]
+
+    purchase_orders = np.array([purchase_orders[purchase_orders[:, 1] == i]
+                                for i in range(constants.Stock.TOTAL_NUM)], dtype=object)
+    sell_orders = np.array([sell_orders[sell_orders[:, 1] == i]
+                            for i in range(constants.Stock.TOTAL_NUM)], dtype=object)
+
+    transactions = []
+    for stock_id in range(constants.Stock.TOTAL_NUM):
+      purchase_pointer = 0
+      sell_pointer = sell_orders[stock_id].shape[0] - 1
+      while (purchase_pointer in range(purchase_orders[stock_id].shape[0]) and
+             sell_pointer in range(sell_orders[stock_id].shape[0]) and
+             purchase_orders[stock_id][purchase_pointer, 3] >= sell_orders[stock_id][sell_pointer, 3]):
+        quantity = min(purchase_orders[stock_id][purchase_pointer, 2], sell_orders[stock_id][sell_pointer, 2])
+        # TODO: turn a row into tuple with dtype
+        transactions.append([purchase_orders[stock_id][purchase_pointer, 0],
+                             sell_orders[stock_id][sell_pointer, 0],
+                             stock_id, quantity, sell_orders[stock_id][sell_pointer, 3]])
+        purchase_orders[stock_id][purchase_pointer, 2] -= quantity
+        sell_orders[stock_id][sell_pointer, 2] -= quantity
+        if purchase_orders[stock_id][purchase_pointer, 2] == 0:
+          purchase_pointer += 1
+        if sell_orders[stock_id][sell_pointer, 2] == 0:
+          sell_pointer -= 1
+    return np.array(transactions, dtype=np.float64)
 
   def __transact(self, transactions: np.array) -> None:
     pass
