@@ -1,10 +1,13 @@
+import datetime
+import os
+import constants
+import matplotlib.pyplot as plt
+import seaborn as sns
 import numpy as np
 from numpy.typing import NDArray
 
-import constants
 
-
-# TODO: substitute arithmetical operations with numpy functions
+# TODO: substitute iterations with numpy ufuncs as much as possible
 def update_normal_agents(assets: NDArray[np.float64]) -> None:
   individual_expectations = assets[constants.Agent.SLICES[0], :-1, 1] * np.array([
     1 + 2 * (constants.GENERATOR.random(size=constants.Stock.TOTAL_NUM) - .5) * .1
@@ -225,11 +228,33 @@ class Model:
     self._transact(transactions)
     self._record()
 
-  def statistics(self) -> None:
-    pass
+  def plot_index(self) -> None:
+    # plot the index of the market, i.e. the changes of _assets[-1, -1, 0]
+    plt.figure(figsize=(12, 6))
+    sns.lineplot(x=range(len(self._history)), y=[history[-1, -1, 0] for history in self._history])
+    plt.xlabel('Round')
+    plt.ylabel('Index')
+    plt.title('Index of the Market')
+    plt.show()
+
+  def plot_stock(self, stock_id: int) -> None:
+    if stock_id not in range(constants.Stock.TOTAL_NUM):
+      raise ValueError('stock_id must be in [0, constants.Stock.TOTAL_NUM).')
+    # plot the price of the stock with stock_id
+    plt.figure(figsize=(12, 6))
+    sns.lineplot(x=range(len(self._history)), y=[history[-1, stock_id, 1] for history in self._history])
+    plt.xlabel('Round')
+    plt.ylabel('Price')
+    plt.title(f'Price of Stock {stock_id}')
+    plt.show()
 
   def load(self, path: str) -> None:
-    self._assets = np.load(path)
+    if not os.path.exists(path):
+      raise FileNotFoundError(f'{path} not exists.')
+    self._history = np.load(path)
+    self._assets = self._history[-1]
 
   def save(self, path: str) -> None:
-    np.save(path, self._assets)
+    if os.path.exists(path):
+      os.rename(path, '%s.bak' % path)
+    np.save(path, self._history)
