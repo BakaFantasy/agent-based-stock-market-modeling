@@ -4,7 +4,7 @@ import numpy as np
 # hyperparameters
 ROUNDS = 100
 SEED = 42
-LOAD_DATA = False
+LOAD_DATA = True
 ASSETS_PATH = 'data/assets.npy'
 TRANSACTIONS_PATH = 'data/transactions.npy'
 
@@ -48,8 +48,8 @@ class Agent:
     Expert,
     LocalImitative,
     # MarketImitative,
-    # TimeWeighted,
-    # VolumeWeighted,
+    TimeWeighted,
+    VolumeWeighted,
   ]
 
   NUM_SELECTION = len(SELECTIONS)

@@ -13,6 +13,8 @@ def main() -> None:
     model.save()
   model.plot_index()
   model.plot_agent(0)
+  model.plot_agent(2100)
+  model.plot_agent(2600)
 
 
 if __name__ == '__main__':
