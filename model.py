@@ -12,12 +12,12 @@ class Model:
     self._assets = np.zeros((constants.Agent.TOTAL_NUM + 1, constants.Stock.TOTAL_NUM + 1, 2),
                             dtype=np.float64)
     # initialize agents and the market
-    for i in range(constants.Agent.NUM_TYPE):
-      self._assets[constants.Agent.SLICES[i], -1, 0] = constants.Agent.INIT_ASSETS[i]
-      self._assets[constants.Agent.SLICES[i], -1, 1] = 1 + constants.Agent.RISK_FREE_INTEREST_RATE
-    for i in range(constants.Stock.NUM_TYPE):
-      self._assets[:, constants.Stock.SLICES[i], 1] = constants.Stock.INIT_PRICES[i]
-      self._assets[-1, constants.Stock.SLICES[i], 0] = constants.Stock.INIT_QUANTITIES[i]
+    for i in range(constants.Agent.NUM_SELECTION):
+      self._assets[constants.Agent.SELECTIONS[i].SLICE, -1, 0] = constants.Agent.SELECTIONS[i].INIT_ASSETS
+      self._assets[constants.Agent.SELECTIONS[i].SLICE, -1, 1] = 1 + constants.Agent.RISK_FREE_INTEREST_RATE
+    for i in range(constants.Stock.NUM_SELECTION):
+      self._assets[:, constants.Stock.SELECTIONS[i].SLICE, 1] = constants.Stock.SELECTIONS[i].INIT_PRICE
+      self._assets[-1, constants.Stock.SELECTIONS[i].SLICE, 0] = constants.Stock.SELECTIONS[i].INIT_QUANTITY
     self._assets[-1, -1] = [0, 1]
 
     # set random generator
@@ -26,53 +26,64 @@ class Model:
     # set updaters
     self._updaters = [self._update_random_agents, self._update_expert_agents,
                       self._update_local_imitative_agents, self._update_market_imitative_agents,
-                      self._update_twap_agents, self._update_vwap_agents]
+                      self._update_time_weighted_agents, self._update_volume_weighted_agents]
 
     # set history
     self._history_assets = []
     self._history_transactions = []
 
   def _update_random_agents(self) -> None:
-    individual_expectations = self._assets[constants.Agent.SLICES[0], :-1, 1] * np.array([
+    individual_expectations = self._assets[constants.Agent.Random.SLICE, :-1, 1] * np.array([
       1 + 2 * (self._generator.random(size=constants.Stock.TOTAL_NUM) - .5) * .1
-      for _ in range(constants.Agent.NUMS[0])])
-    expert_mean = np.mean(self._assets[constants.Agent.SLICES[1], :-1, 1])
-    self._assets[constants.Agent.SLICES[0], :-1, 1] = individual_expectations + (expert_mean - individual_expectations) * .2
+      for _ in range(constants.Agent.Random.NUM)])
+    expert_mean = np.mean(self._assets[constants.Agent.Expert.SLICE, :-1, 1])
+    self._assets[constants.Agent.Random.SLICE, :-1, 1] = (individual_expectations +
+                                                          (expert_mean - individual_expectations) * .2)
 
   def _update_expert_agents(self) -> None:
-    self._assets[constants.Agent.SLICES[1], :-1, 1] = np.array(
+    self._assets[constants.Agent.Expert.SLICE, :-1, 1] = np.array(
       [self._generator.normal(loc=0, scale=.01, size=constants.Stock.TOTAL_NUM) +
        constants.Agent.RISK_FREE_DAILY_RETURN_RATE + 1
-       for _ in range(constants.Agent.NUMS[1])]) * self._assets[-1, :-1, 1]
+       for _ in range(constants.Agent.Expert.NUM)]) * self._assets[-1, :-1, 1]
 
   def _update_local_imitative_agents(self) -> None:
-    # retrospecting the last k rounds, the new expectation is random(sum(purchase price) / sum(purchase quantity), sum(sell price) / sum(sell quantity)), where the sums are over the k rounds
-    sight = min(constants.Agent.LOCAL_IMITATIVE_SIGHT, len(self._history_transactions))
+    # retrospecting the last k rounds, the new expectation is
+    # random(sum(purchase price) / sum(purchase quantity), sum(sell price) / sum(sell quantity)), where
+    # the sums are over the k rounds
+    sight = min(constants.Agent.LocalImitative.SIGHT, len(self._history_transactions))
     if sight == 0:
       return
     transaction_sums = np.sum(self._history_transactions[-sight:], axis=0)
     for stock_id in range(constants.Stock.TOTAL_NUM):
       if transaction_sums[stock_id, 2] == 0:
         continue
-      self._assets[constants.Agent.SLICES[2], stock_id, 1] = (transaction_sums[stock_id, 0] /
-                                                              transaction_sums[stock_id, 2] +
-                                                              self._generator.random() *
-                                                              ((transaction_sums[stock_id, 1] -
-                                                                transaction_sums[stock_id, 0]) /
-                                                                transaction_sums[stock_id, 2]))
+      self._assets[constants.Agent.LocalImitative.SLICE, stock_id, 1] = (transaction_sums[stock_id, 0] /
+                                                                         transaction_sums[stock_id, 2] +
+                                                                         self._generator.random() *
+                                                                         ((transaction_sums[stock_id, 1] -
+                                                                           transaction_sums[stock_id, 0]) /
+                                                                          transaction_sums[stock_id, 2]))
 
   def _update_market_imitative_agents(self) -> None:
     pass
 
-  def _update_twap_agents(self) -> None:
+  def _update_time_weighted_agents(self) -> None:
     pass
 
-  def _update_vwap_agents(self) -> None:
-    pass
+  def _update_volume_weighted_agents(self) -> None:
+    sight = min(constants.Agent.VolumeWeighted.SIGHT, len(self._history_transactions))
+    if sight == 0:
+      return
+    transaction_sums = np.sum(self._history_transactions[-sight:], axis=0)
+    for stock_id in range(constants.Stock.TOTAL_NUM):
+      if transaction_sums[stock_id, 2] == 0:
+        continue
+      # sum(closing price * quantity) / sum(quantity) for the last k rounds
+      # self._assets[constants.Agent.VolumeWeighted.SLICE, stock_id, 1] =
 
   def _update(self) -> None:
     """Updates expected prices of all types of agents."""
-    for i in range(constants.Agent.NUM_TYPE):
+    for i in range(constants.Agent.NUM_SELECTION):
       self._updaters[i]()
 
   def _order(self) -> (NDArray[np.float64], NDArray[np.float64]):
@@ -105,16 +116,17 @@ class Model:
                               axis=1)[:, :constants.Agent.ALTERNATIVE_NUM]
 
     purchase_nums = np.array([min(constants.Agent.MAX_PURCHASE_NUM,
-                                  np.sum(self._assets[i, alternatives[i], 1] - self._assets[-1, alternatives[i], 1] >= constants.Agent.EXPECTED_PROFIT))
+                                  np.sum(self._assets[i, alternatives[i], 1] - self._assets[-1, alternatives[i], 1] >=
+                                         constants.Agent.EXPECTED_PROFIT))
                               for i in range(constants.Agent.TOTAL_NUM)], dtype=np.int32)
 
-    purchase_alternatives = np.array([alternatives[i, :purchase_nums[i]]
+    purchase_alternatives = np.array([np.array(alternatives[i, :purchase_nums[i]], dtype=np.int32)
                                       for i in range(constants.Agent.TOTAL_NUM)], dtype=object)
 
     owned_stocks = np.array([np.nonzero(self._assets[i, :-1, 0] > 0)[0]
                              for i in range(constants.Agent.TOTAL_NUM + 1)], dtype=object)
 
-    sell_alternatives = np.array([np.intersect1d(alternatives[i, purchase_nums[i]:], owned_stocks[i])
+    sell_alternatives = np.array([np.setdiff1d(owned_stocks[i], purchase_alternatives[i])
                                   for i in range(constants.Agent.TOTAL_NUM)], dtype=object)
 
     budgets = np.array([min(self._assets[i, -1, 0], constants.Agent.MAX_BUDGET)
@@ -180,8 +192,8 @@ class Model:
     :param sell_orders: Tuple of (agent_id, stock_id, quantity, sell_price).
     :return: Tuples of (purchaser_id, seller_id, stock_id, quantity, purchase_price, sell_price).
     """
-    purchase_orders = purchase_orders[np.argsort(-purchase_orders[:, 3])]
-    sell_orders = sell_orders[np.argsort(-sell_orders[:, 3])]
+    purchase_orders = purchase_orders[np.argsort(purchase_orders[:, 3])]
+    sell_orders = sell_orders[np.argsort(sell_orders[:, 3])]
 
     purchase_orders = np.array([purchase_orders[purchase_orders[:, 1] == i]
                                 for i in range(constants.Stock.TOTAL_NUM)], dtype=object)
@@ -219,7 +231,8 @@ class Model:
     return np.array(transactions, dtype=np.float64)
 
   def _record_transactions(self, transactions: np.array) -> None:
-    """Records the transactions, aka sum(purchase_price * quantity), sum(sell_price * quantity) and sum(quantity) for each stock."""
+    """Records the transactions, aka sum(purchase_price * quantity), sum(sell_price * quantity)
+    and sum(quantity) for each stock."""
     # first group the transactions by stock_id
     transactions = np.array([transactions[transactions[:, 2] == i]
                              for i in range(constants.Stock.TOTAL_NUM)], dtype=object)
@@ -263,6 +276,7 @@ class Model:
     self._record_assets()
 
   def plot_index(self) -> None:
+    # TODO: more concise index calculation
     # plot the index of the market, i.e. the changes of _assets[-1, -1, 0]
     plt.figure(figsize=(12, 6))
     sns.lineplot(x=range(len(self._history_assets)), y=[history[-1, -1, 0] for history in self._history_assets])
@@ -293,13 +307,18 @@ class Model:
     plt.title(f'Assets of Agent {agent_id}')
     plt.show()
 
-  def load(self, path: str) -> None:
-    if not os.path.exists(path):
-      raise FileNotFoundError(f'{path} not exists.')
-    self._history_assets = np.load(path)
+  def load(self) -> None:
+    if (not os.path.exists(constants.ASSETS_PATH) or
+            not os.path.exists(constants.TRANSACTIONS_PATH)):
+      raise FileNotFoundError(f'{constants.ASSETS_PATH} not exists.')
+    self._history_assets = np.load(constants.ASSETS_PATH)
     self._assets = self._history_assets[-1]
+    self._history_transactions = np.load(constants.TRANSACTIONS_PATH)
 
-  def save(self, path: str) -> None:
-    if os.path.exists(path):
-      os.rename(path, '%s.bak' % path)
-    np.save(path, self._history_assets)
+  def save(self) -> None:
+    def _save_helper(path: str, data: np.array) -> None:
+      if os.path.exists(path):
+        os.rename(path, '%s.bak' % path)
+      np.save(path, data)
+    _save_helper(constants.ASSETS_PATH, self._history_assets)
+    _save_helper(constants.TRANSACTIONS_PATH, self._history_transactions)
