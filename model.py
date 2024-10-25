@@ -1,8 +1,8 @@
 import os
 import constants
 import matplotlib.pyplot as plt
-import seaborn as sns
 import numpy as np
+import seaborn as sns
 from numpy.typing import NDArray
 
 
@@ -33,53 +33,75 @@ class Model:
     self._history_transactions = []
 
   def _update_random_agents(self) -> None:
-    individual_expectations = self._assets[constants.Agent.Random.SLICE, :-1, 1] * np.array([
-      1 + 2 * (self._generator.random(size=constants.Stock.TOTAL_NUM) - .5) * .1
-      for _ in range(constants.Agent.Random.NUM)])
+    individual_expectations = self._assets[constants.Agent.Random.SLICE, :-1, 1] * (1 + 2 * (
+            self._generator.random(size=(constants.Agent.Random.NUM, constants.Stock.TOTAL_NUM)) - .5) * .1)
     expert_mean = np.mean(self._assets[constants.Agent.Expert.SLICE, :-1, 1])
     self._assets[constants.Agent.Random.SLICE, :-1, 1] = (individual_expectations +
                                                           (expert_mean - individual_expectations) * .2)
 
   def _update_expert_agents(self) -> None:
-    self._assets[constants.Agent.Expert.SLICE, :-1, 1] = np.array(
-      [self._generator.normal(loc=0, scale=.01, size=constants.Stock.TOTAL_NUM) +
-       constants.Agent.RISK_FREE_DAILY_RETURN_RATE + 1
-       for _ in range(constants.Agent.Expert.NUM)]) * self._assets[-1, :-1, 1]
+    self._assets[constants.Agent.Expert.SLICE, :-1, 1] = (
+      self._generator.normal(loc=0, scale=.01, size=(constants.Agent.Expert.NUM, constants.Stock.TOTAL_NUM)) +
+      constants.Agent.RISK_FREE_DAILY_RETURN_RATE + 1) * self._assets[-1, :-1, 1]
 
   def _update_local_imitative_agents(self) -> None:
-    # retrospecting the last k rounds, the new expectation is
+    # retrospecting the last sight rounds, the new expectation is
     # random(sum(purchase price) / sum(purchase quantity), sum(sell price) / sum(sell quantity)), where
-    # the sums are over the k rounds
+    # the sums are over the sight rounds
     sight = min(constants.Agent.LocalImitative.SIGHT, len(self._history_transactions))
     if sight == 0:
       return
     transaction_sums = np.sum(self._history_transactions[-sight:], axis=0)
     for stock_id in range(constants.Stock.TOTAL_NUM):
-      if transaction_sums[stock_id, 2] == 0:
+      if transaction_sums[stock_id, 0] == 0 or transaction_sums[stock_id, 1] == 0:
         continue
-      self._assets[constants.Agent.LocalImitative.SLICE, stock_id, 1] = (transaction_sums[stock_id, 0] /
-                                                                         transaction_sums[stock_id, 2] +
+      self._assets[constants.Agent.LocalImitative.SLICE, stock_id, 1] = (transaction_sums[stock_id, 2] /
+                                                                         transaction_sums[stock_id, 0] +
                                                                          self._generator.random() *
-                                                                         ((transaction_sums[stock_id, 1] -
-                                                                           transaction_sums[stock_id, 0]) /
-                                                                          transaction_sums[stock_id, 2]))
+                                                                         (transaction_sums[stock_id, 3] /
+                                                                          transaction_sums[stock_id, 1] -
+                                                                          transaction_sums[stock_id, 2] /
+                                                                          transaction_sums[stock_id, 0]))
 
   def _update_market_imitative_agents(self) -> None:
+    # retrospecting the last 1 round and the last sight rounds, the new expectation is
+    # closing price + impact factor of the last round * (closing price - closing price of the last round) +
+    # impact factor of the last sight rounds * (closing price - closing price of the last sight rounds)
+    # where the impact factors are calculated by two maps MIX and MIY respectively
+    # where the keys are the rate of increase of the closing price of the last round and
+    # the last sight rounds respectively
+    # and the values are 10 * key which bounds in [-1, 1]
+    # every time the closing price is updated, the value of the map is updated by the formula
+    # MIX(x) -= (new expected price - last expected price) * weight
+    # MIY(x) -= (new expected price - last expected price) * (1 - weight)
+    # where the weight is initially set to 0.5 and if the new expected price is closer to the real closing price, the
+    # weight is increased by 0.1, otherwise decreased by 0.1
     pass
 
   def _update_time_weighted_agents(self) -> None:
-    pass
+    # retrospecting the last sight rounds, the new expectation is
+    # sum(closing price) / sight, where the sums are over the sight rounds
+    sight = min(constants.Agent.TimeWeighted.SIGHT, len(self._history_transactions))
+    if sight == 0:
+      return
+    # calculate the average price of the stocks in the last sight rounds
+    self._assets[constants.Agent.TimeWeighted.SLICE, :-1, 1] = np.average(self._history_assets[-sight:],
+                                                                          axis=0)[-1, :-1, 1]
 
   def _update_volume_weighted_agents(self) -> None:
+    # retrospecting the last sight rounds, the new expectation is
+    # sum(closing price * quantity) / sum(quantity), where the sums are over the sight rounds
     sight = min(constants.Agent.VolumeWeighted.SIGHT, len(self._history_transactions))
     if sight == 0:
       return
     transaction_sums = np.sum(self._history_transactions[-sight:], axis=0)
     for stock_id in range(constants.Stock.TOTAL_NUM):
-      if transaction_sums[stock_id, 2] == 0:
+      if transaction_sums[stock_id, 0] == 0 and transaction_sums[stock_id, 1] == 0:
         continue
-      # sum(closing price * quantity) / sum(quantity) for the last k rounds
-      # self._assets[constants.Agent.VolumeWeighted.SLICE, stock_id, 1] =
+      self._assets[constants.Agent.VolumeWeighted.SLICE, stock_id, 1] = ((transaction_sums[stock_id, 2] +
+                                                                          transaction_sums[stock_id, 3]) /
+                                                                         (transaction_sums[stock_id, 0] +
+                                                                          transaction_sums[stock_id, 1]))
 
   def _update(self) -> None:
     """Updates expected prices of all types of agents."""
@@ -148,7 +170,8 @@ class Model:
 
     purchase_orders = np.array([(i, stock_id, quantities[i][stock_id],
                                  self._assets[-1, stock_id, 1] +
-                                 ((self._assets[i, stock_id, 1] - self._assets[-1, stock_id, 1]) -
+                                 ((self._assets[i, stock_id, 1] -
+                                   self._assets[-1, stock_id, 1]) -
                                   (self._assets[i, alternatives[i][purchase_nums[i]], 1] -
                                    self._assets[-1, alternatives[i][purchase_nums[i]], 1])) *
                                  self._generator.random())
@@ -159,7 +182,8 @@ class Model:
 
     sell_orders = np.array([[i, stock_id, self._assets[i, stock_id, 0],
                              self._assets[-1, stock_id, 1] +
-                             ((self._assets[i, stock_id, 1] - self._assets[-1, stock_id, 1]) -
+                             ((self._assets[i, stock_id, 1] -
+                               self._assets[-1, stock_id, 1]) -
                               (self._assets[i, alternatives[i][purchase_nums[i] - 1], 1] -
                                self._assets[-1, alternatives[i][purchase_nums[i] - 1], 1])) *
                              self._generator.random()]
@@ -185,12 +209,12 @@ class Model:
 
     2. group the two arrays of orders by stock numbers.
 
-    3. match the purchase_orders and sell_orders in loop with dual pointers, constructing transactions
-      which are tuples of (purchaser_id, seller_id, stock_id, quantity, price).
+    3. match the purchase_orders and sell_orders in loop with dual pointers, recording quantities of stocks which are
+      successfully transacted for each agent.
 
     :param purchase_orders: Tuples of (agent_id, stock_id, quantity, purchase_price).
     :param sell_orders: Tuple of (agent_id, stock_id, quantity, sell_price).
-    :return: Tuples of (purchaser_id, seller_id, stock_id, quantity, purchase_price, sell_price).
+    :return: quantities of transactions for each agent.
     """
     purchase_orders = purchase_orders[np.argsort(purchase_orders[:, 3])]
     sell_orders = sell_orders[np.argsort(sell_orders[:, 3])]
@@ -200,7 +224,7 @@ class Model:
     sell_orders = np.array([sell_orders[sell_orders[:, 1] == i]
                             for i in range(constants.Stock.TOTAL_NUM)], dtype=object)
 
-    transactions = []
+    transactions = np.zeros((constants.Agent.TOTAL_NUM + 1, constants.Stock.TOTAL_NUM), dtype=np.int32)
     for stock_id in range(constants.Stock.TOTAL_NUM):
       purchase_pointer = purchase_orders[stock_id].shape[0] - 1
       sell_pointer = 0
@@ -214,12 +238,8 @@ class Model:
         else:
           closing_price = sell_orders[stock_id][sell_pointer, 3]
         quantity = min(purchase_orders[stock_id][purchase_pointer, 2], sell_orders[stock_id][sell_pointer, 2])
-        transactions.append([purchase_orders[stock_id][purchase_pointer, 0],
-                             sell_orders[stock_id][sell_pointer, 0],
-                             stock_id,
-                             quantity,
-                             purchase_orders[stock_id][purchase_pointer, 3],
-                             sell_orders[stock_id][sell_pointer, 3]])
+        transactions[int(purchase_orders[stock_id][purchase_pointer, 0]), stock_id] = quantity
+        transactions[int(sell_orders[stock_id][sell_pointer, 0]), stock_id] = -quantity
         purchase_orders[stock_id][purchase_pointer, 2] -= quantity
         sell_orders[stock_id][sell_pointer, 2] -= quantity
         if purchase_orders[stock_id][purchase_pointer, 2] == 0:
@@ -231,37 +251,30 @@ class Model:
     return np.array(transactions, dtype=np.float64)
 
   def _record_transactions(self, transactions: np.array) -> None:
-    """Records the transactions, aka sum(purchase_price * quantity), sum(sell_price * quantity)
-    and sum(quantity) for each stock."""
-    # first group the transactions by stock_id
-    transactions = np.array([transactions[transactions[:, 2] == i]
-                             for i in range(constants.Stock.TOTAL_NUM)], dtype=object)
-    self._history_transactions.append(np.array([[
-      np.sum(transactions[stock_id][:, 3] * transactions[stock_id][:, 4]),
-      np.sum(transactions[stock_id][:, 3] * transactions[stock_id][:, 5]),
-      np.sum(transactions[stock_id][:, 3])]
-      for stock_id in range(constants.Stock.TOTAL_NUM)], dtype=np.float64))
+    """
+    Records the transactions, aka sum(purchase_quantity), sum(sell_quantity)
+    sum(price * purchase_quantity) and sum(price * sell_quantity) for each stock.
+
+    :param transactions: quantities of transactions for each agent.
+    """
+    purchase_transactions = np.maximum(transactions, 0)
+    sell_transactions = np.maximum(-transactions, 0)
+    purchase_quantities = np.sum(purchase_transactions, axis=0)
+    sell_quantities = np.sum(sell_transactions, axis=0)
+    purchase_prices = np.sum(self._assets[:, :-1, 1] * purchase_transactions, axis=0)
+    sell_prices = np.sum(self._assets[:, :-1, 1] * sell_transactions, axis=0)
+    self._history_transactions.append(np.array([purchase_quantities, sell_quantities,
+                                                purchase_prices, sell_prices], dtype=np.float64).T)
 
   def _transact(self, transactions: np.array) -> None:
     """
     Updates the assets of agents and the market according to the transactions.
 
-    :param transactions: Tuples of (purchaser_id, seller_id, stock_id, quantity, purchase_price, sell_price).
+    :param transactions: quantities of transactions for each agent.
     """
-    for transaction in transactions:
-      # convert purchaser_id, seller_id, stock_id, quantity to integer
-      purchaser_id, seller_id, stock_id, quantity = transaction[:4].astype(np.int32)
-      purchase_price, sell_price = transaction[4:]
-      self._assets[purchaser_id, stock_id, 0] += quantity
-      self._assets[seller_id, stock_id, 0] -= quantity
-      self._assets[purchaser_id, -1, 0] -= quantity * purchase_price
-      self._assets[seller_id, -1, 0] += quantity * sell_price
-      if purchase_price > sell_price:
-        self._assets[-1, -1, 0] += quantity * (purchase_price - sell_price)
-      assert self._assets[purchaser_id, stock_id, 0] >= 0
-      assert self._assets[seller_id, stock_id, 0] >= 0
-      assert self._assets[purchaser_id, -1, 0] >= 0
-      assert self._assets[seller_id, -1, 0] >= 0
+    self._assets[:, :-1, 0] += transactions
+    self._assets[:, -1, 0] -= np.sum(transactions * self._assets[:, :-1, 1], axis=1)
+    assert np.all(self._assets >= 0)
 
   def _record_assets(self) -> None:
     """Records the current state of the market."""
@@ -316,7 +329,10 @@ class Model:
     self._history_transactions = np.load(constants.TRANSACTIONS_PATH)
 
   def save(self) -> None:
+    # check if the directory exists
     def _save_helper(path: str, data: np.array) -> None:
+      if not os.path.exists(os.path.dirname(path)):
+        os.makedirs(os.path.dirname(constants.ASSETS_PATH))
       if os.path.exists(path):
         os.rename(path, '%s.bak' % path)
       np.save(path, data)

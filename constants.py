@@ -46,7 +46,7 @@ class Agent:
   SELECTIONS = [
     Random,
     Expert,
-    LocalImitative,
+    # LocalImitative,
     # MarketImitative,
     # TimeWeighted,
     # VolumeWeighted,

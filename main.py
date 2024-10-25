@@ -13,6 +13,7 @@ def main() -> None:
     model.save()
   model.plot_index()
   model.plot_agent(0)
+  model.plot_stock(0)
 
 
 if __name__ == '__main__':
